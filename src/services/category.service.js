@@ -1,0 +1,305 @@
+/**
+ * LocalWala – Local Commerce & Delivery Platform
+ * (NodeJS, MongoDB, Angular & Flutter)
+ *
+ * Copyright © 2026 WeWorkLocal Private Limited
+ * https://weworklocal.in/
+ *
+ * WeWorkLocal Private Limited
+ *
+ * This source code is confidential.
+ * Unauthorized copying, redistribution, resale, publication,
+ * modification, or use of this source code in any public or
+ * commercial repository is strictly prohibited.
+ *
+ * Ownership Fingerprint:
+ * LWL|WWL|2026|LOCALWALA|NODE
+ */
+
+const { status: httpStatus } = require('http-status');
+const { Category } = require('../models');
+const ApiError = require('../utils/ApiError');
+const checkArrayNotEmpty = require('../utils/arrayNotEmpty');
+const appCache = require('../utils/appCache');
+
+const createCategory = async (param) => {
+  if (await Category.isNameTaken(param.name)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Already exist');
+  }
+  const categoryData = new Category({
+    name: param.name,
+    image: param.image,
+    translations: param.translations,
+    status: true,
+  });
+  await Category.create(categoryData);
+  await appCache.clearByPrefix('catalog:categories');
+  return { success: true };
+};
+
+const getAllCategoryAdmin = async (options) => {
+  const limit = options.limit && parseInt(options.limit, 10) > 0 ? parseInt(options.limit, 10) : 10;
+  const page = options.page && parseInt(options.page, 10) > 0 ? parseInt(options.page, 10) : 1;
+  const skip = (page - 1) * limit;
+  const searchRegExp = RegExp(options.search, 'i');
+  const query = [
+    {
+      $match: {
+        $or: [
+          { name: searchRegExp },
+          { slug: searchRegExp },
+          {
+            translations: {
+              $elemMatch: {
+                value: { $regex: searchRegExp },
+              },
+            },
+          },
+        ],
+      },
+    },
+    { $sort: { createdAt: -1 } },
+    { $skip: skip },
+    { $limit: Number(limit) },
+    {
+      $lookup: {
+        from: 'restaurants',
+        localField: '_id',
+        foreignField: 'category',
+        as: 'restaurants',
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        id: '$_id',
+        image: 1,
+        slug: 1,
+        name: 1,
+        status: 1,
+        translations: 1,
+        restaurants: {
+          $size: '$restaurants',
+        },
+      },
+    },
+  ];
+  const results = await Category.aggregate(query);
+  const countResult = await Category.aggregate([
+    {
+      $match: {
+        $or: [
+          { name: searchRegExp },
+          { slug: searchRegExp },
+          {
+            translations: {
+              $elemMatch: {
+                value: { $regex: searchRegExp },
+              },
+            },
+          },
+        ],
+      },
+    },
+    { $count: 'totalCount' },
+  ]);
+  return Promise.all([results, countResult]).then(() => {
+    const totalResults = checkArrayNotEmpty(countResult) ? countResult[0].totalCount : 0;
+    const totalPages = Math.ceil(totalResults / limit);
+    const result = {
+      results,
+      page,
+      limit,
+      totalPages,
+      totalResults,
+    };
+    return Promise.resolve(result);
+  });
+};
+
+const getAllActiveMainCategories = async (options) => {
+  const limit = options.limit && parseInt(options.limit, 10) > 0 ? parseInt(options.limit, 10) : 10;
+  const page = options.page && parseInt(options.page, 10) > 0 ? parseInt(options.page, 10) : 1;
+  const skip = (page - 1) * limit;
+  const results = await Category.aggregate([
+    {
+      $match: {
+        status: true,
+      },
+    },
+    { $sort: { createdAt: -1 } },
+    { $skip: skip },
+    { $limit: Number(limit) },
+    {
+      $project: {
+        _id: 0,
+        id: '$_id',
+        image: 1,
+        name: 1,
+        slug: 1,
+        status: 1,
+        translations: 1,
+      },
+    },
+  ]);
+  const totalResults = await Category.countDocuments({ status: true });
+  return Promise.all([results, totalResults]).then(() => {
+    const totalPages = Math.ceil(totalResults / limit);
+    const result = {
+      results,
+      page,
+      limit,
+      totalPages,
+      totalResults,
+      success: true,
+    };
+    return Promise.resolve(result);
+  });
+};
+
+const getAllCategoryList = async () => {
+  const cached = await appCache.get('catalog:categories:list');
+  if (cached !== undefined) return cached;
+  const category = await Category.find(
+    { status: true },
+    { id: 1, name: 1, translations: 1, slug: 1 }
+  );
+  await appCache.set('catalog:categories:list', category, 300000);
+  return category;
+};
+
+const getCategoryId = async (id) => {
+  return Category.findById(id);
+};
+
+const updateCategoryById = async (categoryId, updateBody) => {
+  const category = await getCategoryId(categoryId);
+  if (!category) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Not found');
+  }
+  if (updateBody.name && (await Category.isNameTaken(updateBody.name, categoryId))) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Already exist');
+  }
+  Object.assign(category, updateBody);
+  await category.save();
+  await appCache.clearByPrefix('catalog:categories');
+  return { success: true };
+};
+
+const deleteCategoryById = async (categoryId) => {
+  const category = await getCategoryId(categoryId);
+  if (!category) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Not found');
+  }
+  await category.deleteOne();
+  await appCache.clearByPrefix('catalog:categories');
+  return { success: true };
+};
+
+const getAllActiveCategory = async () => {
+  const cached = await appCache.get('catalog:categories:active');
+  if (cached !== undefined) return cached;
+  const category = await Category.find({ status: true }, { id: 1, name: 1, translations: 1 });
+  await appCache.set('catalog:categories:active', category, 300000);
+  return category;
+};
+
+const exportCollection = async (search) => {
+  const searchRegExp = RegExp(search, 'i');
+  const query = [
+    {
+      $match: {
+        $or: [
+          { name: searchRegExp },
+          { slug: searchRegExp },
+          {
+            translations: {
+              $elemMatch: {
+                value: { $regex: searchRegExp },
+              },
+            },
+          },
+        ],
+      },
+    },
+    { $sort: { createdAt: -1 } },
+    {
+      $lookup: {
+        from: 'restaurants',
+        localField: '_id',
+        foreignField: 'category',
+        as: 'restaurants',
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        id: '$_id',
+        image: 1,
+        slug: 1,
+        name: 1,
+        status: 1,
+        restaurants: {
+          $size: '$restaurants',
+        },
+      },
+    },
+  ];
+  const results = await Category.aggregate(query);
+  return results;
+};
+
+const exportRawCollection = async (search) => {
+  const searchRegExp = RegExp(search, 'i');
+  const query = [
+    {
+      $match: {
+        $or: [
+          { name: searchRegExp },
+          { slug: searchRegExp },
+          {
+            translations: {
+              $elemMatch: {
+                value: { $regex: searchRegExp },
+              },
+            },
+          },
+        ],
+      },
+    },
+    { $sort: { createdAt: -1 } },
+  ];
+  const results = await Category.aggregate(query);
+  return results;
+};
+
+const importCollection = async (importArray) => {
+  if (importArray !== null && checkArrayNotEmpty(importArray)) {
+    importArray.forEach(async (param) => {
+      const categoryData = new Category({
+        name: param && param.name && param.name !== null && param.name !== '' ? param.name : 'NA',
+        image:
+          param && param.image && param.image !== null && param.image !== '' ? param.image : 'NA',
+        status: param && (param.status === 'active' || param.status === 'Active'),
+        translations: [],
+      });
+      await Category.create(categoryData);
+    });
+  }
+  return { success: true };
+};
+
+module.exports = {
+  createCategory,
+  getAllCategoryAdmin,
+  getCategoryId,
+  updateCategoryById,
+  deleteCategoryById,
+  getAllCategoryList,
+  getAllActiveCategory,
+  getAllActiveMainCategories,
+  exportCollection,
+  exportRawCollection,
+  importCollection,
+};
+

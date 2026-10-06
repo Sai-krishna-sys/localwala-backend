@@ -1,0 +1,17 @@
+# Dependencies
+node_modules
+
+# yarn error logs
+yarn-error.log
+
+# Environment varibales
+.env*
+!.env*.example
+
+# Code coverage
+coverage
+public/src/fcm_keys/serviceAccountKey.json
+
+src/fcm_keys/serviceAccountKey.json
+
+src/fcm_keys/serviceAccountKey.json
